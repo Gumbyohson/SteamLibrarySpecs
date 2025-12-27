@@ -904,16 +904,21 @@ if __name__ == "__main__":
                user_details = json.load(f)
          except Exception:
             pass
-      default_api_key = "DE5D8AB204854D38C1331E029BFDDE90"
-      # Use cached API key and user if available, otherwise prompt
-      api_key = user_details.get("api_key") or input(f"Enter your Steam Web API key (press Enter to use default): ").strip() or default_api_key
-      # Use cached username or ID if available
+      # Prompt for API key if not cached
+      api_key = user_details.get("api_key")
+      if not api_key:
+         api_key = input("Enter your Steam Web API key: ").strip()
+         while not api_key:
+            print("API key is required.")
+            api_key = input("Enter your Steam Web API key: ").strip()
+      # Prompt for user input if not cached
       user_input = user_details.get("user_input")
       steam_id = user_details.get("steam_id")
       if not user_input or not steam_id:
-         # Prompt only if missing
-         default_user = "Gumbyohson"
-         user_input = input(f"Enter your Steam ID (17-digit number) or custom profile name (press Enter for default '{default_user}'): ").strip() or default_user
+         user_input = input("Enter your Steam ID (17-digit number) or custom profile name: ").strip()
+         while not user_input:
+            print("Steam ID or profile name is required.")
+            user_input = input("Enter your Steam ID (17-digit number) or custom profile name: ").strip()
          steam_id = resolve_steamid(api_key, user_input)
          username = user_input if not user_input.isdigit() else None
          user_details = {"api_key": api_key, "steam_id": steam_id, "user_input": user_input, "username": username}
@@ -923,6 +928,8 @@ if __name__ == "__main__":
                json.dump(user_details, f, indent=2)
          except Exception:
             pass
+      else:
+         username = user_details.get("username")
       if not steam_id:
          sys.exit(1)
       games = get_steam_library(api_key, steam_id)
