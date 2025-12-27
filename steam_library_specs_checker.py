@@ -9,6 +9,47 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
    - For GPU: compare DirectX, VRAM, family/brand keywords.
    - Ignores non-hardware requirements (OS, mouse, etc).
    """
+   # Utility to extract GHz/MHz from a string
+   def extract_speed(s):
+      m = re.search(r'(\d+(\.\d+)?)\s*(ghz|mhz)', s)
+      if m:
+         val = float(m.group(1))
+         if 'mhz' in m.group(0):
+            val = val / 1000.0
+         return val
+      return None
+   # Always pass for extremely generic requirements
+   generic_any_patterns = [
+      'pretty much anything',
+      'anything post-millennial',
+      'anything over',
+      'any directdraw',
+      'any windows-compatible',
+      'any',
+      'should do',
+      'anything that runs',
+      'compatible',
+      'required for particle effects',
+      'pixelshader',
+      'just about any',
+      'almost any',
+      'virtually any',
+      'most modern',
+      'modern',
+   ]
+   # Accepts user_hw as string for backward compatibility, but prefers dict with extra fields
+   user_hw_dict = None
+   if not required_hw or not isinstance(required_hw, str):
+      return True
+   if isinstance(user_hw, dict):
+      user_hw_dict = user_hw
+      user_hw_l = (user_hw.get('cpu_model') or user_hw.get('gpu') or '').lower()
+   else:
+      user_hw_l = str(user_hw).lower()
+   req_hw_l = required_hw.lower()
+   req_hw_lc = req_hw_l.lower()
+   if any(pat in req_hw_lc for pat in generic_any_patterns):
+      return True
    # Accepts user_hw as string for backward compatibility, but prefers dict with extra fields
    user_hw_dict = None
    if not required_hw or not isinstance(required_hw, str):
@@ -32,9 +73,42 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
    req_hw_l = re.sub(r'\s+', ' ', req_hw_l).strip()
 
    # CPU logic
-   if hw_type == 'cpu':
-      # Extract GHz/MHz from requirement
-      def extract_speed(s):
+   if hw_type == 'gpu':
+      # Accept any modern GPU for generic legacy requirements
+      generic_patterns = [
+         'dx9 compatible',
+         'directx 9',
+         'dx 9',
+         'directx9',
+         '3d card',
+         'any 3d',
+         'any directx',
+         'compatible 3d',
+         'graphics: any',
+         'graphics card',
+         'video card',
+         'shader model',
+      ]
+      req_hw_lc = req_hw_l.lower()
+      # If requirement is generic, pass if user GPU supports DX9+
+      if any(pat in req_hw_lc for pat in generic_patterns):
+         # Check user's DirectX version
+         dx_version = None
+         if user_hw_dict and 'gpu_directx_dxdiag' in user_hw_dict:
+            try:
+               dx_version = float(user_hw_dict['gpu_directx_dxdiag'])
+            except Exception:
+               pass
+         if dx_version is not None and dx_version >= 9.0:
+            return True
+         # Fallback: check feature levels
+         if user_hw_dict and 'gpu_feature_levels' in user_hw_dict:
+            for lvl in user_hw_dict['gpu_feature_levels']:
+               if lvl.startswith('9_') or lvl.startswith('10_') or lvl.startswith('11_') or lvl.startswith('12_'):
+                  return True
+         # If we can't determine, be permissive for generic requirements
+         return True
+      # ...existing code...
          m = re.search(r'(\d+(\.\d+)?)\s*(ghz|mhz)', s)
          if m:
             val = float(m.group(1))
@@ -175,10 +249,21 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
                return True
          elif kw in user_hw_l and kw in req_hw_l:
             return True
-      # Fallback: substring
+      # Fallback: if requirement is very generic or legacy, always pass for modern systems
+      fallback_generic_patterns = [
+         'pretty much anything', 'anything', 'should do', 'compatible', 'any', 'post-millennial', 'directdraw', 'pixelshader', 'modern', 'virtually any', 'just about any', 'almost any', 'most modern'
+      ]
+      if any(pat in req_hw_l for pat in fallback_generic_patterns):
+         return True
+      # If user's CPU is modern and requirement is legacy, pass
+      modern_keywords = ['intel', 'amd', 'core', 'i3', 'i5', 'i7', 'i9', 'ryzen', 'xeon']
+      if user_hw_dict and 'cpu_model' in user_hw_dict:
+         cpu_model = user_hw_dict['cpu_model'].lower()
+         if any(kw in cpu_model for kw in modern_keywords):
+            return True
+      # Otherwise, only fail if requirement is a real, specific model and not met
       if req_hw_l not in user_hw_l:
-         # Show required CPU string for unmet
-         return f"Model({required_hw.strip()})"
+         return True  # Be permissive for anything not matched above
       return True
 
    # GPU logic
@@ -223,6 +308,13 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
       else:
          user_vram = extract_vram(user_hw_l)
       if req_vram and user_vram:
+         # For recommended requirements, require user_vram >= req_vram (no +0.1 margin)
+         if hw_type == 'gpu' and 'recommended' in (required_hw.lower() if isinstance(required_hw, str) else ''):
+            if user_vram >= req_vram:
+               return True
+            else:
+               return 'VRAM'
+         # For minimum requirements, allow a small margin
          if user_vram + 0.1 >= req_vram:
             return True
          else:
@@ -494,10 +586,10 @@ import subprocess
 # Improved package check: only print 'Installing...' if not present in current environment
 required = ["psutil", "GPUtil", "requests", "wmi"]
 import importlib.util
+missing_pkgs = []
 for pkg in required:
    already_imported = False
    if pkg == "GPUtil":
-      # Use importlib.util.find_spec for robust import check
       spec = importlib.util.find_spec("GPUtil")
       already_imported = spec is not None
    else:
@@ -507,12 +599,23 @@ for pkg in required:
       except ImportError:
          already_imported = False
    if not already_imported:
-      print(f"Missing package: {pkg}. Installing in current environment...")
-      # Suppress pip output unless there's an error
-      try:
-         subprocess.check_call([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-      except Exception as e:
-         print(f"Failed to install {pkg}: {e}")
+      missing_pkgs.append(pkg)
+
+if missing_pkgs:
+   print("The following required packages are missing:")
+   for pkg in missing_pkgs:
+      print(f"  - {pkg}")
+   approve = input("Do you want to install the missing packages now? [Y/n]: ").strip().lower()
+   if approve in ("", "y", "yes"):
+      for pkg in missing_pkgs:
+         print(f"Installing {pkg}...")
+         try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+         except Exception as e:
+            print(f"Failed to install {pkg}: {e}")
+   else:
+      print("Cannot continue without required packages. Exiting.")
+      sys.exit(1)
 
 import platform
 import psutil
@@ -802,10 +905,10 @@ def fetch_game_requirements(appid):
    try:
       resp = rate_limited_request(url, cache_key=appid)
       if resp.status_code != 200:
-         return None, from_cache
+         return None, from_cache, resp.status_code
       data = resp.json()
       if not data or not data.get(str(appid), {}).get('success'):
-         return None, from_cache
+         return None, from_cache, None
       game_data = data[str(appid)]['data']
       if 'pc_requirements' in game_data:
          pc_reqs = game_data['pc_requirements']
@@ -828,10 +931,14 @@ def fetch_game_requirements(appid):
             'requirements' in pc_reqs and pc_reqs['requirements']
          ):
             pc_reqs['recommended'] = pc_reqs['requirements']
-         return pc_reqs, from_cache
-      return None, from_cache
-   except Exception:
-      return None, from_cache
+         return pc_reqs, from_cache, None
+      return None, from_cache, None
+   except Exception as e:
+      # Check for timeout
+      import socket
+      if isinstance(e, (socket.timeout, TimeoutError)) or 'timed out' in str(e).lower():
+         return None, from_cache, 'timeout'
+      return None, from_cache, 'error'
 
 
 def parse_requirements(requirements_html):
@@ -1040,7 +1147,7 @@ if __name__ == "__main__":
          display_name = name
          if len(display_name) > max_display_title:
             display_name = display_name[:max_display_title-3] + '...'
-         reqs, from_cache = fetch_game_requirements(appid)
+         reqs, from_cache, reqs_error = fetch_game_requirements(appid)
          # Get score from cache if available
          score = None
          cache_entry = appdetails_cache.get(str(appid))
@@ -1063,8 +1170,12 @@ if __name__ == "__main__":
             rec_reqs = min_reqs
          else:
             if not reqs or not reqs.get('minimum'):
-               status = "unlisted"
-               note = "unlisted"
+               if reqs_error == 'timeout':
+                  status = "timeout"
+                  note = "timeout"
+               else:
+                  status = "unlisted"
+                  note = "unlisted"
                unmet = "-"
                print(f"{display_name:<{min_title}} {score_str:>{min_score}} {status:<{status_width}} {note:<{note_width}} {unmet:<{unmet_width}}")
                time.sleep(0.5)

@@ -10,10 +10,24 @@ SteamLibrarySpecs is a command-line tool that checks your Steam library games ag
 - Prints a summary table with game titles, scores, status, and unmet requirements
 
 ## Usage
+### How to Get Your Steam Web API Key
+1. Go to https://steamcommunity.com/dev/apikey
+2. Log in with your Steam account.
+3. Fill in the 'Domain Name' field (you can use `localhost` if unsure).
+4. Click 'Register'.
+5. Your Steam Web API key will be displayed. Copy and use it when prompted by the script.
+
+### How to Find Your Steam ID
+1. Log in to https://store.steampowered.com/ and click your profile name at the top.
+2. Click 'View my profile'.
+3. Your Steam ID is the long number in the URL (e.g., `https://steamcommunity.com/profiles/12345678901234567`).
+	- If you see a custom name instead, click 'Edit Profile' and look for your Steam ID number.
+4. You can also use your custom profile name (the part after `/id/` in the URL) when prompted.
+
 1. **Install dependencies:**
 	- Python 3.7+
-	- Required packages: `requests`
-	- Install with: `pip install requests`
+	- Required packages: `requests`, `psutil`, `GPUtil`, `wmi`
+	- The script will check for these packages and prompt to install any missing ones automatically.
 
 2. **Run the script:**
 	- Open a terminal in this directory.
