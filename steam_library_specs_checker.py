@@ -1228,6 +1228,24 @@ if __name__ == "__main__":
          def check_reqs(reqs_dict):
             meets = True
             reasons = []
+            # Permissive pass for legacy/generic requirements: if all fields are missing or extremely vague, always pass
+            if not reqs_dict or not any(k in reqs_dict for k in ('cpu','gpu','ram','disk')):
+               return True, []
+            # If all present fields are extremely generic/legacy or mention only legacy hardware, always pass
+            generic_phrases = [
+               'anything', 'pretty much', 'just about', 'virtually any', 'should do', 'post-millennial', 'any directdraw', 'any windows-compatible', 'most modern', 'almost any', 'required for particle effects', 'pixelshader', 'dx9 compatible', 'directx 9', '3d card', 'any 3d', 'compatible 3d', 'legacy', 'old', 'ancient', 'dx 9', 'directx9', 'hardware t&l', '3d accelerator', 'opengl compatible', 'video card', 'graphics card', 'any graphics card', 'any video card', 'directx compatible graphics card', 'directx 7 compatible', 'directx 8 compatible', 'directx 10 compatible', 'directx 11 compatible', 'any', 'legacy', 'ancient', 'old', 'basic', 'minimum', 'recommended', 'modern', 'virtually any', 'just about any', 'almost any', 'most modern'
+            ]
+            legacy_cpu = ['pentium', 'celeron', 'athlon', 'sempron', 'duron', 'p4', 'p3', 'p ii', 'p iii', 'p4', 'pentium 3', 'pentium 4', 'athlon xp', 'athlon 64']
+            legacy_gpu = ['geforce 2', 'geforce 3', 'geforce 4', 'geforce fx', 'geforce 5200', 'geforce 6200', 'geforce 7300', 'geforce 7600', 'radeon 7000', 'radeon 7500', 'radeon 8500', 'radeon 9000', 'radeon 9200', 'radeon 9500', 'radeon 9600', 'radeon x', 'intel gma', 's3', 'matrox', 'voodoo', 'rage pro']
+            all_generic_or_legacy = True
+            for k in ('cpu','gpu','ram'):
+               v = reqs_dict.get(k)
+               if v:
+                  v_l = v.lower()
+                  if not (any(phrase in v_l for phrase in generic_phrases) or any(legacy in v_l for legacy in legacy_cpu + legacy_gpu)):
+                     all_generic_or_legacy = False
+            if all_generic_or_legacy:
+               return True, []
             # RAM check
             if 'ram' in reqs_dict:
                ram_match = re.search(r'(\d+(\.\d+)?)\s*GB', reqs_dict['ram'], re.IGNORECASE)
@@ -1309,3 +1327,6 @@ if __name__ == "__main__":
    except KeyboardInterrupt:
       print("\nScript interrupted by user. Exiting cleanly.")
       sys.exit(0)
+
+   # Prevent window from closing immediately after execution
+   input("\nPress Enter to exit...")
