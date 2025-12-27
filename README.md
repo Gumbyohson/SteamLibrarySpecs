@@ -1,3 +1,11 @@
+# Getting Python
+
+If you don't already have Python 3.7 or newer installed, you can easily get it using Ninite:
+
+- Go to [https://ninite.com/python-python3-pythonx3/](https://ninite.com/python-python3-pythonx3/)
+- Download and run the installer. This will automatically install the latest version of Python 3 for you, with no extra toolbars or adware.
+
+After installation, you may need to restart your terminal or computer for the `python` command to become available.
 # SteamLibrarySpecs
 
 SteamLibrarySpecs is a command-line tool that checks your Steam library games against your PC's hardware specifications. It fetches system requirements for each game from the Steam Store and compares them to your detected CPU, GPU, RAM, and disk space, providing a summary of which games your system can run.
@@ -24,16 +32,20 @@ SteamLibrarySpecs is a command-line tool that checks your Steam library games ag
 	- If you see a custom name instead, click 'Edit Profile' and look for your Steam ID number.
 4. You can also use your custom profile name (the part after `/id/` in the URL) when prompted.
 
-1. **Install dependencies:**
-	- Python 3.7+
-	- Required packages: `requests`, `psutil`, `GPUtil`, `wmi`
-	- The script will check for these packages and prompt to install any missing ones automatically.
 
-2. **Run the script:**
-	- Open a terminal in this directory.
-	- Run: `python steam_library_specs_checker.py`
+## Installation & Running
 
-3. **Follow prompts:**
+### Install dependencies
+
+- Python 3.7+
+- Required packages: `requests`, `psutil`, `GPUtil`, `wmi`
+- The script will check for these packages and prompt to install any missing ones automatically.
+
+### Run the script
+
+1. Open a terminal in this directory.
+2. Run: `python steam_library_specs_checker.py`
+3. Follow prompts:
 	- Enter your Steam API key and Steam ID when prompted.
 	- The script will detect your PC specs and check your games.
 
