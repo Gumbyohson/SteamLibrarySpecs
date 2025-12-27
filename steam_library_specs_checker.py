@@ -18,24 +18,21 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
             val = val / 1000.0
          return val
       return None
-   # Always pass for extremely generic requirements
+   # Only pass for extremely generic/legacy requirements
    generic_any_patterns = [
       'pretty much anything',
       'anything post-millennial',
       'anything over',
       'any directdraw',
       'any windows-compatible',
-      'any',
       'should do',
       'anything that runs',
-      'compatible',
       'required for particle effects',
       'pixelshader',
       'just about any',
       'almost any',
       'virtually any',
       'most modern',
-      'modern',
    ]
    # Accepts user_hw as string for backward compatibility, but prefers dict with extra fields
    user_hw_dict = None
@@ -50,6 +47,43 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
    req_hw_lc = req_hw_l.lower()
    if any(pat in req_hw_lc for pat in generic_any_patterns):
       return True
+
+   # If requirement mentions specific modern models, do strict comparison
+   modern_cpu_models = [
+      'i7-4790k', 'i5-8400', 'ryzen 7 1800x', 'ryzen 5 2600',
+      'i7-7700', 'i5-10400', 'ryzen 7 2700x', 'ryzen 5 3600',
+      'i5-10400f', 'i7-8700', 'i5-9600k', 'i7-9700k', 'i9-9900k',
+      'i5-11400', 'i5-12400', 'i7-12700', 'i9-12900',
+   ]
+   modern_gpu_models = [
+      'gtx 1650', 'rx 480', 'gtx 1060', 'rx 590', 'arc a750',
+      'rtx 2060', 'rtx 3060', 'rtx 4060', 'rx 6600', 'rx 6700',
+      'rtx 2070', 'rtx 3070', 'rtx 4070', 'rx 6800', 'rx 6900',
+   ]
+   # If a specific model is mentioned, require strict match
+   if hw_type == 'cpu' and any(model in req_hw_lc for model in modern_cpu_models):
+      # Only pass if user's CPU model string contains one of these or is newer
+      user_model = ''
+      if user_hw_dict and 'cpu_model' in user_hw_dict:
+         user_model = user_hw_dict['cpu_model'].lower()
+      else:
+         user_model = user_hw_l
+      # Accept if user's CPU is equal or newer (simple substring or number match)
+      for model in modern_cpu_models:
+         if model in user_model:
+            return True
+      # Otherwise, fail
+      return f"Model({required_hw.strip()})"
+   if hw_type == 'gpu' and any(model in req_hw_lc for model in modern_gpu_models):
+      user_model = ''
+      if user_hw_dict and 'gpu' in user_hw_dict:
+         user_model = user_hw_dict['gpu'].lower()
+      else:
+         user_model = user_hw_l
+      for model in modern_gpu_models:
+         if model in user_model:
+            return True
+      return f"Model({required_hw.strip()})"
    # Accepts user_hw as string for backward compatibility, but prefers dict with extra fields
    user_hw_dict = None
    if not required_hw or not isinstance(required_hw, str):
