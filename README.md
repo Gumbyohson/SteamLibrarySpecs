@@ -49,6 +49,22 @@ SteamLibrarySpecs is a command-line tool that checks your Steam library games ag
 	- Enter your Steam API key and Steam ID when prompted.
 	- The script will detect your PC specs and check your games.
 
+### New: Print or export matched games
+
+- To print the list of games your PC meets requirements for (sorted by score):
+
+```powershell
+python steam_library_specs_checker.py --matches
+```
+
+- To export the matched list to a JSON file:
+
+```powershell
+python steam_library_specs_checker.py --export-matches matches.json
+```
+
+The `--matches` flag prints a concise sorted list after the main table. `--export-matches` writes a JSON array of matched games with `appid`, `title`, `score`, and `status`.
+
 ## Output
 The script prints a table like:
 
@@ -64,6 +80,7 @@ Portal 2                     95      REC       [CACHED]  -
 - Your API key is masked in output for privacy.
 - Results are cached in `appdetails_cache.json` for efficiency.
 - Unmet requirements are shown as CPU, GPU, RAM, DISK, VRAM, or DirectX.
+- The CPU parsing was improved to handle requirement strings like `1.7+ GHz` (some Steam entries use a `+` suffix). If a game previously reported a false negative on CPU, re-run the script to get updated results.
 
 ## License
 MIT License. See LICENSE for details.
