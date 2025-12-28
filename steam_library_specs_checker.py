@@ -1,5 +1,144 @@
 import re
+import argparse
+
+# CLI flags
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument('--no-pause', action='store_true', help='Do not wait for Enter at the end')
+parser.add_argument('--strict-cpu', action='store_true', help='Require stricter desktop-vs-mobile CPU checks')
+parser.add_argument('--matches', action='store_true', help='Print matched games sorted by score at the end')
+parser.add_argument('--export-matches', type=str, default=None, help='Write matched games (JSON) to the given file')
+_parsed_args, _unknown = parser.parse_known_args()
+NO_PAUSE = bool(getattr(_parsed_args, 'no_pause', False))
+STRICT_CPU = bool(getattr(_parsed_args, 'strict_cpu', False))
+PRINT_MATCHES = bool(getattr(_parsed_args, 'matches', False))
+EXPORT_MATCHES_PATH = getattr(_parsed_args, 'export_matches', None)
 # Utility: basic CPU/GPU string matching (placeholder)
+
+# Config: allow treating higher CPU family (i5 > i3) as sufficient when True
+CPU_FAMILY_ALLOW_HIGHER_FAMILY = True
+
+# GPU tier mapping (small, extendable)
+GPU_TIER_MAP = {
+   # Nvidia
+   'gtx 1060': 3, 'gtx 1650': 2, 'gtx 1050': 1,
+   'rtx 2060': 4, 'rtx 3060': 5, 'rtx 4060': 6,
+   # AMD
+   'rx 580': 3, 'rx 590': 3, 'rx 6600': 5, 'rx 6700': 6,
+   # Intel ARC (treated as discrete)
+   'arc a750': 3, 'arc a770': 4,
+}
+
+def parse_gpu_model(s):
+   """Return normalized gpu model string and inferred tier (int or None)."""
+   if not s:
+      return (None, None)
+   s_l = s.lower()
+   # normalize common tokens
+   s_l = s_l.replace('nvidia','').replace('geforce','').replace('amd','').replace('radeon','').strip()
+   # try to find known models in the map
+   for k in GPU_TIER_MAP:
+      if k in s.lower():
+         return (k, GPU_TIER_MAP[k])
+   # try simple patterns: 'gtx 1060', 'rx 580', 'rtx 3060', 'arc a750'
+   m = re.search(r'(gtx|rtx|rx|arc)\s*\w*\s*(\d{3,4})', s.lower())
+   if m:
+      key = f"{m.group(1)} {m.group(2)}"
+      return (key, GPU_TIER_MAP.get(key))
+   # fallback: detect 'intel iris' as integrated explicitly
+   if 'iris' in s_l or 'intel hd' in s_l or 'intel uhd' in s_l:
+      return (s_l, 0)
+   return (s_l, None)
+
+def parse_cpu_model(s):
+   """Return tuple (vendor, family, generation, max_ghz) where available."""
+   if not s:
+      return (None, None, None, None)
+   s_l = s.lower()
+   # GHz
+   ghz = None
+   m = re.findall(r'(\d+(?:\.\d+)?)(?:\+)?\s*ghz', s_l)
+   if m:
+      try:
+         ghz = max(float(x) for x in m)
+      except Exception:
+         ghz = None
+   # Intel family like i5-1145g7 or i7-8700
+   intel = re.search(r'(i[3579])[- ]?(\d{3,5})', s_l)
+   if intel:
+      fam = intel.group(1)
+      gen = None
+      num = intel.group(2)
+      if len(num) >= 3:
+         gen = int(num[:2]) if len(num) >= 4 else int(num[0])
+      return ('intel', fam, gen, ghz)
+   # AMD Ryzen
+   amd = re.search(r'(ryzen)\s*(\d)', s_l)
+   if amd:
+      fam = f"ryzen {amd.group(2)}"
+      return ('amd', fam, None, ghz)
+   # Apple/ARM
+   if 'apple m' in s_l or 'm1' in s_l or 'm2' in s_l:
+      return ('apple', 'm', None, ghz)
+   # attempt to capture SKU suffix (mobile vs desktop) e.g. '1145G7', '1135G7', '9700K', '10600T'
+   sku = None
+   sku_m = re.search(r'\b(\d{3,4})([a-z]{1,2}\d?)\b', s_l)
+   if sku_m:
+      sku = sku_m.group(2)
+   # fallback try to capture numeric generation
+   gen_m = re.search(r'\b(\d{4,5})\b', s_l)
+   gen = int(gen_m.group(1)) if gen_m else None
+   return (None, None, gen, ghz, sku)
+
+
+# Heuristic: detect mobile CPU SKUs from model strings (U/G/H/Y/P/T, HS, etc.)
+def is_mobile_cpu_model(s):
+   if not s:
+      return False
+   s_l = s.lower()
+   if 'mobile' in s_l or 'ultrabook' in s_l or 'notebook' in s_l:
+      return True
+   # common mobile suffix letters: U, G, H, Y, P, T, HS
+   m = re.search(r'\b\d{3,4}([a-z]{1,2}\d?)\b', s_l)
+   if m:
+      suf = m.group(1)
+      if suf and suf[0] in ('u','g','h','y','p','t','s'):
+         return True
+   # explicit model patterns like i5-1145g7 or i7-1165g7
+   if re.search(r'\bi[3579][- ]?\d{3,4}[a-z]', s_l):
+      return True
+   return False
+
+# Helper to classify integrated vs discrete GPUs (module-level)
+def is_discrete_gpu(gpu_str, hw_dict=None):
+   if not gpu_str:
+      return False
+   s = gpu_str.lower()
+   # expanded integrated keywords
+   integrated_gpu_keywords = ['iris', 'intel hd', 'intel uhd', 'hd graphics', 'intel iris', 'uhd', 'iris xe', 'intel xe lp', 'intel xe max']
+   # quick vendor/model tokens that strongly indicate discrete
+   discrete_tokens = ['rtx', 'gtx', 'geforce', 'radeon', 'rx', 'vii', 'quadro', 'tesla', 'firepro', 'arc', 'a100', 'h100', 'p100', 't4', 'v100']
+   if any(tok in s for tok in discrete_tokens):
+      return True
+   # Apple silicon treated as integrated but high-performance
+   if 'apple m' in s or s.startswith('m1') or s.startswith('m2'):
+      return False
+   # If GPU model parses to a known tier, treat tier>=3 as discrete
+   model_key, tier = parse_gpu_model(s)
+   if tier is not None:
+      return tier >= 2
+   # Use VRAM heuristic: >=4GB and not explicitly integrated implies discrete
+   if hw_dict and hw_dict.get('gpu_vram_gb') is not None:
+      try:
+         v = float(hw_dict.get('gpu_vram_gb') or 0)
+         if v >= 4 and not any(k in s for k in integrated_gpu_keywords):
+            return True
+      except Exception:
+         pass
+   # Default: treat Iris/UHD families as integrated
+   if any(k in s for k in integrated_gpu_keywords):
+      return False
+   # Unknown: be conservative and treat as integrated
+   return False
 
 # Improved hardware matching for CPU and GPU
 def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
@@ -11,7 +150,7 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
    """
    # Utility to extract GHz/MHz from a string
    def extract_speed(s):
-      m = re.search(r'(\d+(\.\d+)?)\s*(ghz|mhz)', s)
+      m = re.search(r'(\d+(?:\.\d+)?)(?:\+)?\s*(ghz|mhz)', s)
       if m:
          val = float(m.group(1))
          if 'mhz' in m.group(0):
@@ -154,7 +293,7 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
       user_speed = None
       # Try to extract the highest GHz from the model string if available (for modern CPUs with turbo/boost)
       def extract_highest_ghz(s):
-         matches = re.findall(r'(\d+\.\d+)\s*ghz', s, re.IGNORECASE)
+         matches = re.findall(r'(\d+(?:\.\d+)?)(?:\+)?\s*ghz', s, re.IGNORECASE)
          if matches:
             return max(float(val) for val in matches)
          return None
@@ -190,29 +329,15 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
       if req_speed and user_speed:
          # Extract CPU family/model and generation for both required and user CPUs
          def extract_cpu_info(s):
-            s = s.lower()
-            intel_match = re.search(r'(i[3579])-?(\d{3,5})?', s)
-            amd_match = re.search(r'(ryzen)\s*(\d)?', s)
-            a_match = re.search(r'a(\d)-?(\d{3,4})?', s)
-            gen_match = re.search(r'(\d{4,5})', s)
-            if intel_match:
-               family = intel_match.group(1)
-               gen = None
-               if intel_match.group(2):
-                  gen = int(intel_match.group(2)[:1]) if len(intel_match.group(2)) >= 4 else None
-               return ('intel', family, gen)
-            elif amd_match:
-               family = f"ryzen {amd_match.group(2) or ''}".strip()
-               return ('amd', family, None)
-            elif a_match:
-               family = f"a{a_match.group(1)}"
-               return ('amd', family, None)
-            elif gen_match:
-               return (None, None, int(gen_match.group(1)))
-            return (None, None, None)
+            return parse_cpu_model(s)
 
          req_info = extract_cpu_info(required_hw)
          user_info = extract_cpu_info(user_hw_dict.get('cpu_model','') if user_hw_dict else user_hw_l)
+         # Treat very old legacy CPU mentions (Pentium, Athlon, Celeron) as satisfied by modern Intel/AMD
+         legacy_cpu_tokens = ['pentium', 'athlon', 'celeron', 'pentium ii', 'pentium iii', 'pentium 4']
+         if any(tok in req_hw_l for tok in legacy_cpu_tokens):
+            if user_info[0] in ('intel','amd') or (user_info[1] and ('i3' in user_info[1] or 'i5' in user_info[1] or 'i7' in user_info[1] or 'ryzen' in (user_info[1] or ''))):
+               return True
 
          # Handle core count requirements (dual-core, quad-core, etc.)
          def required_cores(s):
@@ -243,6 +368,31 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
          if req_cores and user_cores and user_cores >= req_cores:
             return True
 
+            # Mobile-vs-desktop stricter check: if user's CPU appears to be a mobile SKU
+            # (U/G/H/Y/HS suffixes) and the requirement looks desktop-class (high GHz,
+            # explicit desktop models like i5-2300, or user asked for strict checks),
+            # then require GHz/cores/generation to explicitly meet the requirement and
+            # do not apply lenient family upgrades.
+            try:
+               user_model_str = user_hw_dict.get('cpu_model','') if user_hw_dict else user_hw_l
+            except Exception:
+               user_model_str = user_hw_l
+            user_is_mobile = is_mobile_cpu_model(user_model_str)
+            req_is_desktop = False
+            if req_info and req_info[2]:
+               # very old numbering like 2300 will parse as gen >= 10; treat as desktop
+               if req_info[2] >= 10:
+                  req_is_desktop = True
+            if req_speed and req_speed >= 2.7:
+               req_is_desktop = True
+            if re.search(r'\bi[3579]-\d{4}\b', required_hw.lower()):
+               req_is_desktop = True
+            if (user_is_mobile and req_is_desktop) or STRICT_CPU:
+               if (user_info[2] and req_info[2] and user_info[2] >= req_info[2]) or (user_speed and req_speed and user_speed + 0.1 >= req_speed) or (user_cores and req_cores and user_cores >= req_cores):
+                  return True
+               else:
+                  return f"{user_speed}GHz<{req_speed}GHz"
+
          # If user CPU is a higher family (i5, i7, i9, Ryzen, etc.) than the required (i3, A8), treat as sufficient
          req_rank = ['celeron','pentium','a4','a6','a8','i3','i5','i7','i9','ryzen 3','ryzen 5','ryzen 7','ryzen 9']
          def get_rank(info):
@@ -255,7 +405,12 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
          user_idx = get_rank(user_info)
          # If user has i5/i7/i9/Ryzen and required is i3/A8 or lower, pass
          if user_idx > req_idx and req_idx != -1:
-            return True
+            # If configured to allow higher family, accept immediately
+            if CPU_FAMILY_ALLOW_HIGHER_FAMILY:
+               return True
+            # Otherwise require additional checks: generation not older OR GHz sufficient OR cores sufficient
+            if (user_info[2] and req_info[2] and user_info[2] >= req_info[2]) or (user_speed and req_speed and user_speed + 0.1 >= req_speed) or (user_cores and req_cores and user_cores >= req_cores):
+               return True
          # If both are Intel and user generation is newer, pass
          if req_info[0] == 'intel' and user_info[0] == 'intel':
             if user_info[2] and req_info[2] and user_info[2] > req_info[2]:
@@ -325,13 +480,31 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
             return True
          else:
             return 'DirectX'
-      # VRAM (handle 'dedicated VRAM' phrasing)
+      # VRAM extraction: prefer the graphics/video segment when present
       def extract_vram(s):
-         # Match 'dedicated' or not, treat both as VRAM requirement
-         m = re.search(r'(\d+(\.\d+)?)\s*(gb|mb)\s*(dedicated)?\s*(vram|video|graphics)?', s)
+         if not s:
+            return None
+         s_l = s.lower()
+         # Try to isolate the GPU/graphics portion of a mixed requirement string by
+         # finding the last occurrence of common GPU-related keywords and searching
+         # only that segment first (avoids picking up system RAM numbers earlier).
+         gpu_keywords = ['graphics:', 'graphics', 'video:', 'video', 'vram', 'geforce', 'radeon', 'nvidia', 'intel', 'amd', 'shader']
+         start_idx = -1
+         for kw in gpu_keywords:
+            pos = s_l.rfind(kw)
+            if pos > start_idx:
+               start_idx = pos
+         seg = s_l[start_idx:] if start_idx != -1 else s_l
+         # Look for GB/MB in the selected segment first, then fall back to full string
+         m = re.search(r'(\d+(?:\.\d+)?)\s*(gb|mb)\b', seg)
+         if not m:
+            m = re.search(r'(\d+(?:\.\d+)?)\s*(gb|mb)\b', s_l)
          if m:
-            val = float(m.group(1))
-            if 'mb' in m.group(0):
+            try:
+               val = float(m.group(1))
+            except Exception:
+               return None
+            if m.group(2).lower().startswith('mb'):
                val = val / 1024.0
             return val
          return None
@@ -373,7 +546,8 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
       else:
          user_gpu_str = user_hw_l
 
-      # Pass modern GPUs for generic legacy requirements
+      
+      # Pass modern discrete GPUs for generic legacy requirements
       generic_legacy_gpu_phrases = [
          'directx compatible graphics card',
          'directx 7 compatible',
@@ -393,7 +567,7 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
          'any video card'
       ]
       if any(phrase in req_hw_l for phrase in generic_legacy_gpu_phrases):
-         if any(kw in user_gpu_str for kw in modern_gpu_keywords):
+         if is_discrete_gpu(user_gpu_str, user_hw_dict):
             return True
    """
    Robustly compare user hardware to required hardware string.
@@ -427,7 +601,7 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
    if hw_type == 'cpu':
       # Extract GHz/MHz from requirement
       def extract_speed(s):
-         m = re.search(r'(\d+(\.\d+)?)\s*(ghz|mhz)', s)
+         m = re.search(r'(\d+(?:\.\d+)?)(?:\+)?\s*(ghz|mhz)', s)
          if m:
             val = float(m.group(1))
             if 'mhz' in m.group(0):
@@ -435,43 +609,145 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
             return val
          return None
       req_speed = extract_speed(required_hw.lower())
-      user_speed = None
-      if user_hw_dict and user_hw_dict.get('cpu_ghz'):
-         user_speed = user_hw_dict['cpu_ghz']
-      else:
-         user_speed = extract_speed(user_hw_l)
 
-      # Modern CPU always sufficient for legacy requirements
-      legacy_keywords = ['pentium', 'celeron', 'athlon', 'sempron']
-      modern_keywords = ['intel', 'amd', 'core', 'i3', 'i5', 'i7', 'i9', 'ryzen', 'xeon']
-      is_legacy_req = any(kw in req_hw_l for kw in legacy_keywords) or (req_speed and req_speed < 3.5)
-      is_modern_cpu = False
-      cpu_model = ''
-      if user_hw_dict and 'cpu_model' in user_hw_dict:
-         cpu_model = user_hw_dict['cpu_model'].lower()
+      # Determine best-estimate of user's max CPU GHz: prefer reported cpu_ghz, but use any GHz parsed from model string if higher
+      def extract_highest_ghz(s):
+         matches = re.findall(r'(\d+(?:\.\d+)?)(?:\+)?\s*ghz', s, re.IGNORECASE)
+         if matches:
+            return max(float(val) for val in matches)
+         return None
+
+      user_speed = None
+      if user_hw_dict and user_hw_dict.get('cpu_ghz') is not None:
+         try:
+            user_speed = float(user_hw_dict.get('cpu_ghz'))
+         except Exception:
+            user_speed = None
+      # Try to parse from model string (turbo/boost may be present)
+      model_ghz = None
+      if user_hw_dict and user_hw_dict.get('cpu_model'):
+         model_ghz = extract_highest_ghz(user_hw_dict.get('cpu_model'))
       else:
-         cpu_model = user_hw_l
-      if any(kw in cpu_model for kw in modern_keywords):
-         is_modern_cpu = True
-      # If GHz is None but model is modern, treat as modern
-      if is_legacy_req and is_modern_cpu:
+         model_ghz = extract_highest_ghz(user_hw_l)
+      if model_ghz and (user_speed is None or model_ghz > user_speed):
+         user_speed = model_ghz
+
+      # CPU family/rank and core heuristics (fallbacks)
+      def extract_cpu_info(s):
+         return parse_cpu_model(s)
+
+      req_info = extract_cpu_info(required_hw)
+      user_info = extract_cpu_info(user_hw_dict.get('cpu_model','') if user_hw_dict else user_hw_l)
+      # Treat very old legacy CPU mentions (Pentium, Athlon, Celeron) as satisfied by modern Intel/AMD
+      legacy_cpu_tokens = ['pentium', 'athlon', 'celeron', 'pentium ii', 'pentium iii', 'pentium 4']
+      if any(tok in req_hw_l for tok in legacy_cpu_tokens):
+         if user_info[0] in ('intel','amd') or (user_info[1] and ('i3' in user_info[1] or 'i5' in user_info[1] or 'i7' in user_info[1] or 'ryzen' in (user_info[1] or ''))):
+            return True
+
+      # Core count heuristics
+      def required_cores(s):
+         s = (s or '').lower()
+         if 'quad' in s:
+            return 4
+         if 'dual' in s:
+            return 2
+         if 'single' in s:
+            return 1
+         return None
+      req_cores = required_cores(required_hw)
+      user_cores = None
+      if user_hw_dict and 'cpu_cores' in user_hw_dict:
+         user_cores = user_hw_dict['cpu_cores']
+      else:
+         fam = (user_info[1] or '')
+         if 'i9' in fam or 'ryzen 9' in fam:
+            user_cores = 8
+         elif 'i7' in fam or 'ryzen 7' in fam:
+            user_cores = 6
+         elif 'i5' in fam or 'ryzen 5' in fam:
+            user_cores = 4
+         elif 'i3' in fam or 'ryzen 3' in fam:
+            user_cores = 2
+
+      # If GHz requirement exists, prefer GHz comparison first
+      if req_speed and user_speed:
+         if user_speed + 0.1 >= req_speed:
+            return True
+
+      # If cores satisfy a explicit core count requirement, pass
+      if req_cores and user_cores and user_cores >= req_cores:
          return True
 
-      if req_speed and user_speed:
-         if user_speed + 0.1 >= req_speed:  # allow small margin
+         # Mobile-vs-desktop stricter check (same logic as above):
+         try:
+            user_model_str = user_hw_dict.get('cpu_model','') if user_hw_dict else user_hw_l
+         except Exception:
+            user_model_str = user_hw_l
+         user_is_mobile = is_mobile_cpu_model(user_model_str)
+         req_is_desktop = False
+         if req_info and req_info[2]:
+            if req_info[2] >= 10:
+               req_is_desktop = True
+         if req_speed and req_speed >= 2.7:
+            req_is_desktop = True
+         if re.search(r'\bi[3579]-\d{4}\b', required_hw.lower()):
+            req_is_desktop = True
+         if (user_is_mobile and req_is_desktop) or STRICT_CPU:
+            if (user_info[2] and req_info[2] and user_info[2] >= req_info[2]) or (user_speed and req_speed and user_speed + 0.1 >= req_speed) or (user_cores and req_cores and user_cores >= req_cores):
+               return True
+            else:
+               return f"{user_speed}GHz<{req_speed}GHz"
+
+      # Family/rank fallback: treat higher family as sufficient (i5 >= i3, Ryzen5 >= Ryzen3, etc.)
+      req_rank = ['celeron','pentium','a4','a6','a8','i3','i5','i7','i9','ryzen 3','ryzen 5','ryzen 7','ryzen 9']
+      def get_rank(info):
+         fam = (info[1] or '').replace(' ', '').lower()
+         for idx, r in enumerate(req_rank):
+            if r.replace(' ', '') in fam:
+               return idx
+         return -1
+      req_idx = get_rank(req_info)
+      user_idx = get_rank(user_info)
+      if user_idx > req_idx and req_idx != -1:
+         return True
+
+      # If both are Intel or AMD and generation info parsed, prefer newer generation
+      if req_info[0] == 'intel' and user_info[0] == 'intel':
+         if user_info[2] and req_info[2] and user_info[2] > req_info[2]:
             return True
-         else:
-            return False
-      # Check for CPU family/brand keywords
-      cpu_keywords = modern_keywords + legacy_keywords
+      if req_info[0] == 'amd' and user_info[0] == 'amd':
+         if user_info[2] and req_info[2] and user_info[2] > req_info[2]:
+            return True
+
+      # As a last resort, check for matching family keywords
+      try:
+         user_model_str = user_hw_dict.get('cpu_model','') if user_hw_dict else user_hw_l
+      except Exception:
+         user_model_str = user_hw_l
+      user_is_mobile = is_mobile_cpu_model(user_model_str)
+      req_is_desktop = False
+      if req_info and req_info[2]:
+         if req_info[2] >= 10:
+            req_is_desktop = True
+      if req_speed and req_speed >= 2.7:
+         req_is_desktop = True
+      if re.search(r'\bi[3579]-\d{4}\b', required_hw.lower()):
+         req_is_desktop = True
+      skip_family_keyword = (user_is_mobile and req_is_desktop) or STRICT_CPU
+      cpu_keywords = ['intel','amd','core','i3','i5','i7','i9','ryzen']
       for kw in cpu_keywords:
+         if skip_family_keyword:
+            break
          if user_hw_dict and 'cpu_model' in user_hw_dict:
             if kw in user_hw_dict['cpu_model'].lower() and kw in req_hw_l:
                return True
          elif kw in user_hw_l and kw in req_hw_l:
             return True
-      # Fallback: substring
-      return req_hw_l in user_hw_l
+
+      # If we reach here, fail with GHz info if available
+      if req_speed:
+         return f"{user_speed}GHz<{req_speed}GHz" if user_speed is not None else f"<{req_speed}GHz"
+      return False
 
    # GPU logic
    if hw_type == 'gpu':
@@ -496,13 +772,27 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
             return True
          else:
             return False
-      # VRAM (handle 'dedicated VRAM' phrasing)
+      # VRAM extraction: prefer the graphics/video segment when present
       def extract_vram(s):
-         # Match 'dedicated' or not, treat both as VRAM requirement
-         m = re.search(r'(\d+(\.\d+)?)\s*(gb|mb)\s*(dedicated)?\s*(vram|video|graphics)?', s)
+         if not s:
+            return None
+         s_l = s.lower()
+         gpu_keywords = ['graphics:', 'graphics', 'video:', 'video', 'vram', 'geforce', 'radeon', 'nvidia', 'intel', 'amd', 'shader']
+         start_idx = -1
+         for kw in gpu_keywords:
+            pos = s_l.rfind(kw)
+            if pos > start_idx:
+               start_idx = pos
+         seg = s_l[start_idx:] if start_idx != -1 else s_l
+         m = re.search(r'(\d+(?:\.\d+)?)\s*(gb|mb)\b', seg)
+         if not m:
+            m = re.search(r'(\d+(?:\.\d+)?)\s*(gb|mb)\b', s_l)
          if m:
-            val = float(m.group(1))
-            if 'mb' in m.group(0):
+            try:
+               val = float(m.group(1))
+            except Exception:
+               return None
+            if m.group(2).lower().startswith('mb'):
                val = val / 1024.0
             return val
          return None
@@ -550,28 +840,23 @@ def is_cpu_gpu_sufficient(user_hw, required_hw, hw_type=None):
             # Look for legacy model numbers or patterns
             legacy_model_pattern = r'(\d{4}(?:/\d{4,5})*)|(hd\d{4}(?:/\d{4,5})*)|(\d{4,5}gt)|(hd\d{4,5})|((geforce|radeon|ati|amd)[^\d]*\d{4}(?:/\d{4,5})*)|((geforce|radeon|ati|amd)[^\d]*hd\d{4}(?:/hd\d{4,5})*)'
             if re.search(legacy_model_pattern, part):
-               if any(kw in user_gpu_str for kw in modern_gpu_keywords):
-                  # Dota 2 debug print removed
+               if is_discrete_gpu(user_gpu_str, user_hw_dict):
                   return True
             # Also check legacy patterns
             for pat in legacy_gpu_patterns:
                if re.search(pat, part):
-                  if any(kw in user_gpu_str for kw in modern_gpu_keywords):
-                     # Dota 2 debug print removed
+                  if is_discrete_gpu(user_gpu_str, user_hw_dict):
                      return True
             # If requirement mentions 'geforce', 'radeon', 'ati', 'amd', or 'nvidia' and user GPU is modern, always pass (fallback)
-            if any(kw in user_gpu_str for kw in modern_gpu_keywords):
-               # Dota 2 debug print removed
+            if is_discrete_gpu(user_gpu_str, user_hw_dict):
                return True
       # If all GPU requirements are legacy (NVIDIA/ATI/AMD) and user GPU is modern (including Intel), always pass
       if legacy_gpu_found and all(any(x in part for x in legacy_keywords) for part in req_parts):
-         # Dota 2 debug print removed
-         if any(kw in user_gpu_str for kw in modern_gpu_keywords):
-            # Dota 2 debug print removed
+         if is_discrete_gpu(user_gpu_str, user_hw_dict):
             return True
       # If all GPU requirements are legacy (NVIDIA/ATI/AMD) and user GPU is modern (including Intel), always pass
       if legacy_gpu_found and all(any(x in part for x in legacy_keywords) for part in req_parts):
-         if any(kw in user_gpu_str for kw in modern_gpu_keywords):
+         if is_discrete_gpu(user_gpu_str, user_hw_dict):
             return True
       # Otherwise, fallback to keyword matching
       gpu_keywords = ['intel', 'nvidia', 'amd', 'radeon', 'geforce', 'quadro', 'rtx', 'gtx', 'vega', 'iris', 'hd graphics']
@@ -1077,7 +1362,11 @@ if __name__ == "__main__":
       if not games:
          sys.exit(1)
       print(f"\nFound {len(games)} games in your Steam library.")
-      limit_games = input("Process only the first 10 games? (y/N): ").strip().lower() == 'y'
+      # If NO_PAUSE is set (non-interactive), do not prompt to limit games
+      if globals().get('NO_PAUSE', False):
+         limit_games = False
+      else:
+         limit_games = input("Process only the first 10 games? (y/N): ").strip().lower() == 'y'
       if limit_games:
          games = games[:10]
          print("Processing only the first 10 games...")
@@ -1173,6 +1462,7 @@ if __name__ == "__main__":
       print(f"{'-'*min_title} {'-'*min_score} {'-'*status_width} {'-'*note_width} {'-'*unmet_width}")
 
       # Second pass: process and print each game immediately
+      matched_games = []
       for idx, game in enumerate(games):
          appid, name, display_name, score_str = game_rows[idx]
          appid = game['appid']
@@ -1323,10 +1613,46 @@ if __name__ == "__main__":
                status = "NO"
                unmet = ','.join(reasons_min) if reasons_min else "-"
          print(f"{display_name:<{min_title}} {score_str:>{min_score}} {status:<{status_width}} {cache_note:<{note_width}} {unmet:<{unmet_width}}")
+         # Collect matched games for later sorting/export: treat REC and MIN as meets
+         try:
+            score_val = int(score) if score is not None else 0
+         except Exception:
+            try:
+               score_val = int(float(score))
+            except Exception:
+               score_val = 0
+         if status in ("REC", "MIN"):
+            matched_games.append({
+               'appid': appid,
+               'title': name,
+               'display_name': display_name,
+               'score': score_val,
+               'status': status,
+               'unmet': unmet,
+            })
          time.sleep(0.5)  # Be polite to Steam API
+      # After processing all games, optionally print/export matched games sorted by score
+      if PRINT_MATCHES or EXPORT_MATCHES_PATH:
+         # Sort descending by score then title
+         matched_games.sort(key=lambda x: (-x.get('score', 0), x.get('title','')))
+         if PRINT_MATCHES:
+            print('\n--- Games you meet requirements for (sorted by score) ---')
+            for g in matched_games:
+               print(f"{g['score']:>3}  {g['title']}")
+         if EXPORT_MATCHES_PATH:
+            try:
+               with open(EXPORT_MATCHES_PATH, 'w', encoding='utf-8') as ef:
+                  json.dump(matched_games, ef, indent=2)
+               print(f"\nWrote {len(matched_games)} matched games to {EXPORT_MATCHES_PATH}")
+            except Exception as e:
+               print(f"Failed to write matches to {EXPORT_MATCHES_PATH}: {e}")
    except KeyboardInterrupt:
       print("\nScript interrupted by user. Exiting cleanly.")
       sys.exit(0)
 
-   # Prevent window from closing immediately after execution
-   input("\nPress Enter to exit...")
+   # Prevent window from closing immediately after execution unless --no-pause flag was passed
+   if not globals().get('NO_PAUSE', False):
+      try:
+         input("\nPress Enter to exit...")
+      except Exception:
+         pass
